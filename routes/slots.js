@@ -239,7 +239,7 @@ router.patch("/:id/amount", auth, async (req, res) => {
 router.patch("/:id/payment", auth, async (req, res) => {
   try {
     const { playerIndex, paymentStatus, lastUpdatedAt } = req.body;
-
+    const slot = await Slot.findById(req.params.id);
     // ── GUARD 1: timestamp check ─────────────────────────────────────────────
     // Reject if the slot document was modified by anyone since this user
     // last loaded the page (this can happen if an admin is trying to
@@ -257,7 +257,6 @@ router.patch("/:id/payment", auth, async (req, res) => {
 
     const identifier = req.user.identifier;
 
-    const slot = await Slot.findById(req.params.id);
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
     const PLAYER_COUNT = 6;
