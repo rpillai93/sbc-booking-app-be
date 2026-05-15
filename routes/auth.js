@@ -103,25 +103,12 @@ router.post("/register", async (req, res) => {
       phone: normalisedPhone ?? undefined,
       password: hashed,
       resetKey,
+      profileApproved: false,
+      lastLogin: "",
     });
 
-    const identifier = user.email ?? user.phone;
-    const token = jwt.sign(
-      { id: user._id, identifier, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" },
-    );
-
     res.json({
-      token,
-      user: {
-        name: user.name,
-        identifier,
-        email: user.email ?? undefined,
-        phone: user.phone ?? undefined,
-        role: user.role,
-      },
-      // Returned once at registration so the user can note it down
+      success: true,
       resetKey,
     });
   } catch (err) {
@@ -148,11 +135,20 @@ router.post("/login", async (req, res) => {
       user = await User.findOne({ phone: normalisePhone(identifier) });
     }
 
-    if (!user) return res.status(400).json({ message: "Invalid credentials." });
+    if (!user)
+      return res.status(400).json({ message: "Invalid username or password." });
 
     const match = await bcrypt.compare(password, user.password);
     if (!match)
-      return res.status(400).json({ message: "Invalid credentials." });
+      return res.status(400).json({ message: "Invalid username or password." });
+
+    if (!user.profileApproved) {
+      return res.status(403).json({ code: "PENDING_APPROVAL" });
+    }
+
+    await User.findByIdAndUpdate(user._id, {
+      lastLogin: new Date().toISOString(),
+    });
 
     const userIdentifier = user.email ?? user.phone;
     const token = jwt.sign(

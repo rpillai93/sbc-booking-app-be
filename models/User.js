@@ -23,6 +23,8 @@ const userSchema = new mongoose.Schema(
     // Stored in plaintext so admins can look it up directly if needed.
     // Rotated on every successful password reset.
     resetKey: { type: String, default: undefined },
+    profileApproved: { type: Boolean, default: false },
+    lastLogin: { type: String, default: "" },
   },
   { timestamps: true },
 );
