@@ -27,7 +27,7 @@ app.get("/health", (req, res) => {
 // Routes
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/slots", require("./routes/slots"));
-
+app.use("/api/users", require("./routes/users"));
 // Connect DB + Start
 mongoose
   .connect(process.env.MONGODB_URI)

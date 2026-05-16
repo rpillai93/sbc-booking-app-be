@@ -25,6 +25,7 @@ const userSchema = new mongoose.Schema(
     resetKey: { type: String, default: undefined },
     profileApproved: { type: Boolean, default: false },
     lastLogin: { type: String, default: "" },
+    comments: { type: String, default: "" },
   },
   { timestamps: true },
 );
