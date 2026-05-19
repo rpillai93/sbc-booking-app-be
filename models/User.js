@@ -26,6 +26,7 @@ const userSchema = new mongoose.Schema(
     profileApproved: { type: Boolean, default: false },
     lastLogin: { type: String, default: "" },
     comments: { type: String, default: "" },
+    balancePayments: { type: Number, default: 0 },
   },
   { timestamps: true },
 );

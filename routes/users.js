@@ -20,7 +20,7 @@ router.patch("/:id/approve", auth, async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.params.id,
       { profileApproved: true },
-      { new: true, select: "-password -resetKey" },
+      { returnDocument: "after", select: "-password -resetKey" },
     );
     if (!user) return res.status(404).json({ message: "User not found." });
     res.json({ user });

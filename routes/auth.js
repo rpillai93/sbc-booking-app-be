@@ -164,6 +164,7 @@ router.post("/login", async (req, res) => {
         identifier: userIdentifier,
         email: user.email ?? undefined,
         phone: user.phone ?? undefined,
+        balancePayments: user.balancePayments,
         role: user.role,
       },
     });
