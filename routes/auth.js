@@ -49,7 +49,15 @@ function generateResetKey() {
 
 router.post("/register", async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, password } = req.body;
+    const {
+      firstName,
+      lastName,
+      email,
+      phone,
+      password,
+      tosAgreed1,
+      tosAgreed2,
+    } = req.body;
 
     if (!email && !phone) {
       return res
@@ -105,6 +113,8 @@ router.post("/register", async (req, res) => {
       resetKey,
       profileApproved: false,
       lastLogin: "",
+      tosAgreed1: tosAgreed1 === true,
+      tosAgreed2: tosAgreed2 === true,
     });
 
     res.json({

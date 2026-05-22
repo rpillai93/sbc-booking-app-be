@@ -98,7 +98,6 @@ router.patch("/:id/player", auth, async (req, res) => {
       const target = isWaitlist
         ? slot.waitList[playerIndex - PLAYER_COUNT]
         : slot.players[playerIndex];
-      console.log(target);
       if (
         target?.ownerIdentifier &&
         target.ownerIdentifier !== lastUpdatedIdentifier
@@ -215,11 +214,10 @@ router.patch("/:id/player", auth, async (req, res) => {
 });
 
 // PATCH update individual playerAmts — admin only
-// totalAmt is computed as sum of all playerAmts and stored for reference
 router.patch("/:id/amount", auth, async (req, res) => {
   if (!isAdmin(req)) return res.status(403).json({ message: "Unauthorized" });
   try {
-    const { players = [], waitList = [] } = req.body;
+    const { totalAmt = 0, players = [], waitList = [] } = req.body;
 
     const slot = await Slot.findById(req.params.id);
     if (!slot) return res.status(404).json({ message: "Slot not found" });
@@ -229,29 +227,91 @@ router.patch("/:id/amount", auth, async (req, res) => {
       waitList.map((p) => [String(p._id), p.playerAmt]),
     );
 
+    const balanceDeltaMap = new Map(); // Map<ownerIdentifier, number>
+
+    const applyDelta = (identifier, delta) => {
+      if (!identifier) return;
+      const current = balanceDeltaMap.get(identifier) ?? 0;
+      balanceDeltaMap.set(identifier, current + delta);
+    };
+
     let playersModified = false;
     let waitListModified = false;
 
+    // ── Main players ──────────────────────────────────────────────────────────
     slot.players.forEach((sp) => {
-      const amt = playerMap.get(String(sp._id));
-      if (amt !== undefined) {
-        sp.playerAmt = amt;
+      const newAmt = playerMap.get(String(sp._id));
+      if (newAmt === undefined) return;
+
+      // oldAmt is always read from the current stored playerAmt so that
+      // successive edits compute the correct incremental delta each time.
+      // On first publish slotAmountPublished is false so oldAmt is 0.
+      const oldAmt = slot.slotAmountPublished ? (sp.playerAmt ?? 0) : 0;
+      const delta = newAmt - oldAmt;
+
+      // Only update playerAmt if the player hasn't paid yet.
+      // For paid players we still track the delta so balancePayments
+      // reflects any adjustment on top of what they already paid.
+      if (!sp.payment) {
+        sp.playerAmt = newAmt;
         playersModified = true;
       }
+
+      // Always increment balancePayments by the delta regardless of payment
+      // status. For paid players this correctly tracks adjustments on top of
+      // what they already paid.
+      if (delta !== 0) applyDelta(sp.ownerIdentifier, delta);
     });
 
+    // ── Wait-list players ─────────────────────────────────────────────────────
     slot.waitList.forEach((swp) => {
-      const amt = waitListMap.get(String(swp._id));
-      if (amt !== undefined) {
-        swp.playerAmt = amt;
+      const newAmt = waitListMap.get(String(swp._id));
+      if (newAmt === undefined) return;
+
+      const oldAmt = slot.slotAmountPublished ? (swp.playerAmt ?? 0) : 0;
+      const delta = newAmt - oldAmt;
+
+      if (!swp.payment) {
+        swp.playerAmt = newAmt;
         waitListModified = true;
       }
+
+      if (delta !== 0) applyDelta(swp.ownerIdentifier, delta);
     });
 
+    slot.slotTotalAmount = totalAmt;
+
+    if (!slot.slotAmountPublished) slot.slotAmountPublished = true;
     if (playersModified) slot.markModified("players");
     if (waitListModified) slot.markModified("waitList");
 
     await slot.save();
+
+    // ── Apply balance deltas to User records ──────────────────────────────────
+    // ownerIdentifier is an email (contains "@") or a phone number.
+    // We match against User.email or User.phone accordingly.
+    //
+    if (balanceDeltaMap.size > 0) {
+      const updatePromises = [];
+
+      for (const [identifier, delta] of balanceDeltaMap.entries()) {
+        if (delta === 0) continue;
+
+        const isEmail = identifier.includes("@");
+        const query = isEmail ? { email: identifier } : { phone: identifier };
+
+        updatePromises.push(
+          User.findOneAndUpdate(
+            query,
+            { $inc: { balancePayments: delta } },
+            { returnDocument: "after" },
+          ),
+        );
+      }
+
+      await Promise.all(updatePromises);
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -259,14 +319,19 @@ router.patch("/:id/amount", auth, async (req, res) => {
 });
 
 // PATCH update payment status
+// Payment is one-way: false → true only. Players are blocked from paying twice
+// on the client, so this route is called exactly once per player per slot.
 router.patch("/:id/payment", auth, async (req, res) => {
   try {
-    const { playerIndex, paymentStatus, lastUpdatedAt } = req.body;
+    const { playerIndex, lastUpdatedAt } = req.body;
     const slot = await Slot.findById(req.params.id);
-    // ── GUARD 1: timestamp check ─────────────────────────────────────────────
-    // Reject if the slot document was modified by anyone since this user
-    // last loaded the page (this can happen if an admin is trying to
-    // update a player's payment)
+
+    // ── GUARD 1: slot existence ───────────────────────────────────────────────
+    if (!slot) return res.status(404).json({ message: "Slot not found" });
+
+    // ── GUARD 2: timestamp check ──────────────────────────────────────────────
+    // Reject if the slot was modified by anyone since this user last loaded
+    // the page, to prevent stale overwrites.
     if (
       lastUpdatedAt &&
       new Date(lastUpdatedAt).getTime() !== slot.updatedAt.getTime()
@@ -280,31 +345,68 @@ router.patch("/:id/payment", auth, async (req, res) => {
 
     const identifier = req.user.identifier;
 
-    if (!slot) return res.status(404).json({ message: "Slot not found" });
-
     const PLAYER_COUNT = 6;
     const isWaitlist = playerIndex >= PLAYER_COUNT;
 
+    // ── GUARD 3: non-admins can only update their own payment ─────────────────
     if (!isAdmin(req)) {
       const target = isWaitlist
         ? slot.waitList[playerIndex - PLAYER_COUNT]
         : slot.players[playerIndex];
-      if (target?.identifier && target.identifier !== identifier) {
+      if (target?.ownerIdentifier && target.ownerIdentifier !== identifier) {
         return res
           .status(403)
           .json({ message: "You can only update your own payment" });
       }
     }
 
+    // ── Step 1: resolve the target player record ──────────────────────────────
+    const target = isWaitlist
+      ? slot.waitList[playerIndex - PLAYER_COUNT]
+      : slot.players[playerIndex];
+
+    // ── GUARD 4: prevent double-payment server-side ───────────────────────────
+    if (target?.payment === true) {
+      return res
+        .status(409)
+        .json({ message: "Payment has already been made for this slot." });
+    }
+
+    // ── Step 2: set payment flag to true on the slot ──────────────────────────
     if (isWaitlist) {
-      slot.waitList[playerIndex - PLAYER_COUNT].payment = paymentStatus;
+      slot.waitList[playerIndex - PLAYER_COUNT].payment = true;
       slot.markModified("waitList");
     } else {
-      slot.players[playerIndex].payment = paymentStatus;
+      slot.players[playerIndex].payment = true;
       slot.markModified("players");
     }
 
     await slot.save();
+
+    // ── Step 3: decrement User.balancePayments by playerAmt ───────────────────
+    //
+    // Payment is always false → true, so we always decrease the user's
+    // outstanding balance by the player's owed amount.
+    //
+    // ownerIdentifier is an email (contains "@") or a phone number.
+    // We match against User.email or User.phone accordingly.
+    //
+    const ownerIdentifier = target?.ownerIdentifier;
+    const playerAmt = target?.playerAmt ?? 0;
+
+    if (ownerIdentifier && playerAmt !== 0) {
+      const isEmail = ownerIdentifier.includes("@");
+      const query = isEmail
+        ? { email: ownerIdentifier }
+        : { phone: ownerIdentifier };
+
+      await User.findOneAndUpdate(
+        query,
+        { $inc: { balancePayments: -playerAmt } },
+        { returnDocument: "after" },
+      );
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });

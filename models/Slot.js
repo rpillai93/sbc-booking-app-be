@@ -19,6 +19,7 @@ const slotSchema = new mongoose.Schema(
     slotHidden: { type: Boolean, default: false },
     slotArchived: { type: Boolean, default: false },
     slotAmountPublished: { type: Boolean, default: false },
+    slotTotalAmount: { type: Number, default: 0 },
     players: { type: [playerSchema], default: () => Array(6).fill({}) },
     waitList: { type: [playerSchema], default: () => Array(4).fill({}) },
   },
