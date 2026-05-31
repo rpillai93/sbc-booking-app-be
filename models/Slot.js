@@ -15,6 +15,8 @@ const slotSchema = new mongoose.Schema(
     date: { type: String, required: true },
     time: { type: String, required: true },
     courtNo: { type: Number, default: 0 },
+    numberOfCourts: { type: Number, default: 0 },
+    groupId: { type: String, required: true },
     slotLocked: { type: Boolean, default: false },
     slotHidden: { type: Boolean, default: false },
     slotArchived: { type: Boolean, default: false },

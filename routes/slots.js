@@ -2,7 +2,12 @@ const router = require("express").Router();
 const Slot = require("../models/Slot");
 const User = require("../models/User");
 const auth = require("../middleware/auth");
-const { isAdmin, formatDateForServer } = require("../middleware/helpers");
+const { v4: uuidv4 } = require("uuid");
+const {
+  isAdmin,
+  formatDateForServer,
+  rebalanceSlot,
+} = require("../middleware/helpers");
 const logger = require("../utils/logger");
 
 // GET all slots (grouped) — replaces getSlots()
@@ -29,18 +34,47 @@ router.post("/", auth, async (req, res) => {
   try {
     const { date, time, courts } = req.body;
     const count = Number(courts) || 1;
-    const created = [];
     const dateFormatted = formatDateForServer(date);
+
+    const existing = await Slot.findOne({ date: dateFormatted, time }).select(
+      "groupId numberOfCourts",
+    );
+    const groupId = existing?.groupId ?? uuidv4();
+    const totalCourts = existing ? existing.numberOfCourts + count : count;
+    const playerCount = totalCourts <= 2 ? 6 : 7;
+    const waitListCount = 10 - playerCount;
+    const created = [];
 
     for (let i = 0; i < count; i++) {
       const slot = await Slot.create({
         date: dateFormatted,
         time,
-        players: Array(6).fill({}),
-        waitList: Array(4).fill({}),
+        groupId,
+        numberOfCourts: count,
+        players: Array(playerCount).fill({}),
+        waitList: Array(waitListCount).fill({}),
       });
       created.push(slot);
     }
+
+    if (existing) {
+      const existingSlots = await Slot.find({
+        groupId,
+        _id: { $nin: created.map((s) => s._id) },
+      });
+
+      await Promise.all(
+        existingSlots.map((slot) => {
+          const { players, waitList } = rebalanceSlot(slot, playerCount);
+          return Slot.findByIdAndUpdate(slot._id, {
+            numberOfCourts: totalCourts,
+            players,
+            waitList,
+          });
+        }),
+      );
+    }
+
     res.json({ success: true, count: created.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -52,7 +86,33 @@ router.delete("/:id", auth, async (req, res) => {
   if (!isAdmin(req)) return res.status(403).json({ message: "Unauthorized" });
 
   try {
+    const slot = await Slot.findById(req.params.id);
+    if (!slot) return res.status(404).json({ message: "Slot not found" });
+
+    const { groupId } = slot;
     await Slot.findByIdAndDelete(req.params.id);
+
+    const remainingSlots = await Slot.find({
+      groupId,
+      _id: { $ne: req.params.id },
+    });
+
+    if (remainingSlots.length > 0) {
+      const totalCourts = remainingSlots.length;
+      const playerCount = totalCourts <= 2 ? 6 : 7;
+
+      await Promise.all(
+        remainingSlots.map((s) => {
+          const { players, waitList } = rebalanceSlot(s, playerCount);
+          return Slot.findByIdAndUpdate(s._id, {
+            numberOfCourts: totalCourts,
+            players,
+            waitList,
+          });
+        }),
+      );
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -84,7 +144,7 @@ router.patch("/:id/player", auth, async (req, res) => {
       });
     }
 
-    const PLAYER_COUNT = 6;
+    const PLAYER_COUNT = slot.numberOfCourts <= 2 ? 6 : 7;
     const ts = new Date().toISOString();
 
     const isWaitlist = playerIndex >= PLAYER_COUNT;
@@ -345,7 +405,7 @@ router.patch("/:id/payment", auth, async (req, res) => {
 
     const identifier = req.user.identifier;
 
-    const PLAYER_COUNT = 6;
+    const PLAYER_COUNT = slot.numberOfCourts <= 2 ? 6 : 7;
     const isWaitlist = playerIndex >= PLAYER_COUNT;
 
     // ── GUARD 3: non-admins can only update their own payment ─────────────────
