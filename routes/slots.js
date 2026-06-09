@@ -477,9 +477,27 @@ router.patch("/:id/payment", auth, async (req, res) => {
 router.patch("/:id/lock", auth, async (req, res) => {
   if (!isAdmin(req)) return res.status(403).json({ message: "Unauthorized" });
   try {
-    await Slot.findByIdAndUpdate(req.params.id, {
-      slotLocked: req.body.isLocked,
+    const isLocked = req.body.isLocked;
+    const slot = await Slot.findById(req.params.id);
+    if (!slot) return res.status(404).json({ message: "Slot not found" });
+
+    // Set slotLocked on the slot itself
+    slot.slotLocked = isLocked;
+
+    // Update only players with a real name
+    slot.players.forEach((p) => {
+      if (p.name && p.name.trim() !== "" && p.name !== "Available") {
+        p.slotLocked = isLocked;
+      }
     });
+
+    slot.waitList.forEach((p) => {
+      if (p.name && p.name.trim() !== "" && p.name !== "Waitlist") {
+        p.slotLocked = isLocked;
+      }
+    });
+
+    await slot.save();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -551,7 +569,21 @@ router.post("/auto-lock", async (req, res) => {
       if (!slotDateTime) continue;
 
       if (slotDateTime <= in24Hours) {
-        await Slot.findByIdAndUpdate(slot._id, { slotLocked: true });
+        slot.slotLocked = true;
+
+        slot.players.forEach((p) => {
+          if (p.name && p.name.trim() !== "" && p.name !== "Available") {
+            p.slotLocked = true;
+          }
+        });
+
+        slot.waitList.forEach((p) => {
+          if (p.name && p.name.trim() !== "" && p.name !== "Waitlist") {
+            p.slotLocked = true;
+          }
+        });
+
+        await slot.save();
         lockedCount++;
       }
     }

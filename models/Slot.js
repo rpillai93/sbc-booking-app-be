@@ -8,6 +8,7 @@ const playerSchema = new mongoose.Schema({
   timeStamp: { type: String, default: "" },
   payment: { type: Boolean, default: false },
   playerAmt: { type: Number, default: 0 },
+  playerLocked: { type: Boolean, default: false },
 });
 
 const slotSchema = new mongoose.Schema(
