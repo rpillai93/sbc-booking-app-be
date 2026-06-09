@@ -487,13 +487,13 @@ router.patch("/:id/lock", auth, async (req, res) => {
     // Update only players with a real name
     slot.players.forEach((p) => {
       if (p.name && p.name.trim() !== "" && p.name !== "Available") {
-        p.slotLocked = isLocked;
+        p.playerLocked = isLocked;
       }
     });
 
     slot.waitList.forEach((p) => {
       if (p.name && p.name.trim() !== "" && p.name !== "Waitlist") {
-        p.slotLocked = isLocked;
+        p.playerLocked = isLocked;
       }
     });
 
@@ -573,13 +573,13 @@ router.post("/auto-lock", async (req, res) => {
 
         slot.players.forEach((p) => {
           if (p.name && p.name.trim() !== "" && p.name !== "Available") {
-            p.slotLocked = true;
+            p.playerLocked = true;
           }
         });
 
         slot.waitList.forEach((p) => {
           if (p.name && p.name.trim() !== "" && p.name !== "Waitlist") {
-            p.slotLocked = true;
+            p.playerLocked = true;
           }
         });
 
