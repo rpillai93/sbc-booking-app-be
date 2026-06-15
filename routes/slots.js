@@ -32,50 +32,38 @@ router.get("/", auth, async (req, res) => {
 router.post("/", auth, async (req, res) => {
   if (!isAdmin(req)) return res.status(403).json({ message: "Unauthorized" });
   try {
-    const { date, time, courts } = req.body;
-    const count = Number(courts) || 1;
+    const { date, time, courts, numPlayers, numWaitlist } = req.body;
     const dateFormatted = formatDateForServer(date);
+    const playerCount = Number(numPlayers) || 0;
+    const waitlistCount = Number(numWaitlist) || 0;
 
-    const existing = await Slot.findOne({ date: dateFormatted, time }).select(
-      "groupId numberOfCourts",
-    );
-    const groupId = existing?.groupId ?? uuidv4();
-    const totalCourts = existing ? existing.numberOfCourts + count : count;
-    const playerCount = totalCourts <= 2 ? 6 : 7;
-    const waitListCount = 10 - playerCount;
-    const created = [];
-
-    for (let i = 0; i < count; i++) {
-      const slot = await Slot.create({
-        date: dateFormatted,
-        time,
-        groupId,
-        numberOfCourts: count,
-        players: Array(playerCount).fill({}),
-        waitList: Array(waitListCount).fill({}),
-      });
-      created.push(slot);
-    }
+    const existing = await Slot.findOne({ date: dateFormatted, time });
 
     if (existing) {
-      const existingSlots = await Slot.find({
-        groupId,
-        _id: { $nin: created.map((s) => s._id) },
-      });
-
-      await Promise.all(
-        existingSlots.map((slot) => {
-          const { players, waitList } = rebalanceSlot(slot, playerCount);
-          return Slot.findByIdAndUpdate(slot._id, {
-            numberOfCourts: totalCourts,
-            players,
-            waitList,
-          });
-        }),
+      const updatedSlot = await Slot.findByIdAndUpdate(
+        existing._id,
+        {
+          $inc: { numberOfCourts: Number(courts) || 1 },
+          $push: {
+            players: { $each: Array(playerCount).fill({}) },
+            waitList: { $each: Array(waitlistCount).fill({}) },
+          },
+        },
+        { new: true },
       );
+      return res.json({ success: true, slot: updatedSlot });
     }
 
-    res.json({ success: true, count: created.length });
+    const slot = await Slot.create({
+      date: dateFormatted,
+      time,
+      groupId: uuidv4(),
+      numberOfCourts: Number(courts) || 1,
+      players: Array(playerCount).fill({}),
+      waitList: Array(waitlistCount).fill({}),
+    });
+
+    res.json({ success: true, slot });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -119,6 +107,102 @@ router.delete("/:id", auth, async (req, res) => {
   }
 });
 
+// PATCH resize slot — admin only
+router.patch("/:id/resize", auth, async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ message: "Unauthorized" });
+  try {
+    const {
+      removeCourts = 0,
+      removePlayers = 0,
+      removeWaitlist = 0,
+    } = req.body;
+
+    const slot = await Slot.findById(req.params.id);
+    if (!slot) return res.status(404).json({ message: "Slot not found" });
+
+    // ── Validate bounds ───────────────────────────────────────────────────────
+    if (removeCourts < 0 || removeCourts >= slot.numberOfCourts) {
+      if (removeCourts < 0) {
+        return res.status(400).json({
+          message: `No. of courts to Remove must be greater than 0.`,
+        });
+      }
+
+      return res.status(400).json({
+        message: `Cannot remove all courts. Atleast 1 court should remain. Try deleting the entire booking if it is no longer required.`,
+      });
+    }
+
+    if (removePlayers < 0 || slot.players.length - removePlayers < 4) {
+      if (removePlayers < 0) {
+        return res.status(400).json({
+          message: `No. of available players to remove must be greater than 0.`,
+        });
+      }
+
+      return res.status(400).json({
+        message: `Atleast 4 players is required for a court booking. Try deleting the entire booking if it is no longer required.`,
+      });
+    }
+
+    if (removeWaitlist < 0 || removeWaitlist > slot.waitList.length) {
+      if (removeWaitlist < 0) {
+        return res.status(400).json({
+          message: `No. of available waitlist players must be greater than 0.`,
+        });
+      }
+
+      return res.status(400).json({
+        message: `The removal request exceeds the no. of available waitlist slots in this booking!`,
+      });
+    }
+
+    // ── Courts ────────────────────────────────────────────────────────────────
+    if (removeCourts > 0) {
+      slot.numberOfCourts = Math.max(0, slot.numberOfCourts - removeCourts);
+    }
+
+    // ── Player slots — remove from the tail, empty slots first ───────────────
+    // Sort so empty slots sink to the end, then slice off the tail.
+    if (removePlayers > 0) {
+      const filled = slot.players.filter((p) => p.name?.trim());
+      const empty = slot.players.filter((p) => !p.name?.trim());
+
+      if (removePlayers > empty.length) {
+        return res.status(400).json({
+          message: `Cannot remove ${removePlayers} player slot(s) — only ${empty.length} empty slot(s) available. Remove named players first.`,
+        });
+      }
+
+      // drop from the end of the empty list
+      empty.splice(empty.length - removePlayers, removePlayers);
+      slot.players = [...filled, ...empty];
+      slot.markModified("players");
+    }
+
+    // ── Waitlist slots — same logic ───────────────────────────────────────────
+    if (removeWaitlist > 0) {
+      const filled = slot.waitList.filter((p) => p.name?.trim());
+      const empty = slot.waitList.filter((p) => !p.name?.trim());
+
+      if (removeWaitlist > empty.length) {
+        return res.status(400).json({
+          message: `Cannot remove ${removeWaitlist} waitlist slot(s) — only ${empty.length} empty slot(s) available. Remove named waitlist players first.`,
+        });
+      }
+
+      empty.splice(empty.length - removeWaitlist, removeWaitlist);
+      slot.waitList = [...filled, ...empty];
+      slot.markModified("waitList");
+    }
+
+    await slot.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 router.patch("/:id/player", auth, async (req, res) => {
   try {
     const { playerIndex, name, lastUpdatedAt } = req.body;
@@ -144,7 +228,7 @@ router.patch("/:id/player", auth, async (req, res) => {
       });
     }
 
-    const PLAYER_COUNT = slot.numberOfCourts <= 2 ? 6 : 7;
+    const PLAYER_COUNT = slot.players.length;
     const ts = new Date().toISOString();
 
     const isWaitlist = playerIndex >= PLAYER_COUNT;
@@ -405,7 +489,7 @@ router.patch("/:id/payment", auth, async (req, res) => {
 
     const identifier = req.user.identifier;
 
-    const PLAYER_COUNT = slot.numberOfCourts <= 2 ? 6 : 7;
+    const PLAYER_COUNT = slot.players.length;
     const isWaitlist = playerIndex >= PLAYER_COUNT;
 
     // ── GUARD 3: non-admins can only update their own payment ─────────────────
