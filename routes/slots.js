@@ -2,6 +2,7 @@ const router = require("express").Router();
 const Slot = require("../models/Slot");
 const User = require("../models/User");
 const auth = require("../middleware/auth");
+const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 const {
   isAdmin,
@@ -205,18 +206,16 @@ router.patch("/:id/resize", auth, async (req, res) => {
 
 router.patch("/:id/player", auth, async (req, res) => {
   try {
-    const { playerIndex, name, lastUpdatedAt } = req.body;
+    const { playerIndex, name, lastUpdatedAt, assignedUserId } = req.body;
     const lastUpdatedIdentifier = req.user.identifier;
-    // fetch acting user's first name for the ownerName audit field
-    const actingUser = await User.findById(req.user.id).select("firstName");
-    const lastUpdatedName = actingUser.firstName;
+    const actingUser = await User.findById(req.user.id).select(
+      "firstName lastName",
+    );
+    const lastUpdatedName = actingUser.firstName + " " + actingUser.lastName;
 
     const slot = await Slot.findById(req.params.id);
     if (!slot) return res.status(404).json({ message: "Slot not found" });
 
-    // ── GUARD 1: timestamp check ─────────────────────────────────────────────
-    // Reject if the slot document was modified by anyone since this user
-    // last loaded the page.
     if (
       lastUpdatedAt &&
       new Date(lastUpdatedAt).getTime() !== slot.updatedAt.getTime()
@@ -230,14 +229,8 @@ router.patch("/:id/player", auth, async (req, res) => {
 
     const PLAYER_COUNT = slot.players.length;
     const ts = new Date().toISOString();
-
     const isWaitlist = playerIndex >= PLAYER_COUNT;
 
-    // ── GUARD 2: ownership check ─────────────────────────────────────────────
-    // At this point Guard 2 guarantees the target position is either empty
-    // or belongs to the current user. This check handles the remaining case:
-    // removals, where an occupied slot is intentionally targeted.
-    // Admins may remove any booking; regular users may only remove their own.
     if (!isAdmin(req)) {
       const target = isWaitlist
         ? slot.waitList[playerIndex - PLAYER_COUNT]
@@ -253,7 +246,27 @@ router.patch("/:id/player", auth, async (req, res) => {
       }
     }
 
-    // ── WRITE ────────────────────────────────────────────────────────────────
+    let assignedOwnerIdentifier = null;
+    let assignedOwnerName = null;
+    if (assignedUserId && isAdmin(req)) {
+      if (!mongoose.Types.ObjectId.isValid(assignedUserId)) {
+        return res.status(400).json({ message: "Invalid user selected." });
+      }
+      const assignedUser = await User.findById(assignedUserId).select(
+        "firstName lastName email phone",
+      );
+      if (!assignedUser) {
+        return res.status(400).json({ message: "Selected user not found." });
+      }
+      assignedOwnerIdentifier = assignedUser.email || assignedUser.phone;
+      if (!assignedOwnerIdentifier) {
+        return res.status(400).json({
+          message: "Selected user has no email or phone on file.",
+        });
+      }
+      assignedOwnerName = `${assignedUser.firstName} ${assignedUser.lastName}`;
+    }
+
     const isRemovingPlayer = (!name || name.trim() === "") && !isWaitlist;
 
     if (isRemovingPlayer) {
@@ -286,7 +299,6 @@ router.patch("/:id/player", auth, async (req, res) => {
     } else if (isWaitlist) {
       const wlIndex = playerIndex - PLAYER_COUNT;
       if (!name || name.trim() === "") {
-        // removing from waitlist
         slot.waitList.splice(wlIndex, 1);
         slot.waitList.push({
           name: "",
@@ -298,29 +310,31 @@ router.patch("/:id/player", auth, async (req, res) => {
           playerAmt: 0,
         });
       } else if (!slot.waitList[wlIndex]?.name) {
-        // filling an empty waitlist spot
         slot.waitList[wlIndex] = {
-          name,
-          ownerIdentifier: lastUpdatedIdentifier,
-          ownerName: lastUpdatedName,
+          name: assignedOwnerName || name,
+          ownerIdentifier: assignedOwnerIdentifier || lastUpdatedIdentifier,
+          ownerName: assignedOwnerName || lastUpdatedName,
           lastUpdatedIdentifier,
           timeStamp: ts,
           payment: false,
           playerAmt: 0,
         };
       } else {
-        // updating own existing waitlist entry or admin modifying on behalf of someone
         const isAdminRequest =
           slot.waitList[wlIndex].ownerIdentifier !== "" &&
           slot.waitList[wlIndex].ownerIdentifier !== lastUpdatedIdentifier;
         slot.waitList[wlIndex] = {
-          name,
-          ownerIdentifier: isAdminRequest
-            ? slot.waitList[wlIndex].ownerIdentifier
-            : lastUpdatedIdentifier,
-          ownerName: isAdminRequest
-            ? slot.waitList[wlIndex].ownerName
-            : lastUpdatedName,
+          name: assignedOwnerName || name,
+          ownerIdentifier:
+            assignedOwnerIdentifier ||
+            (isAdminRequest
+              ? slot.waitList[wlIndex].ownerIdentifier
+              : lastUpdatedIdentifier),
+          ownerName:
+            assignedOwnerName ||
+            (isAdminRequest
+              ? slot.waitList[wlIndex].ownerName
+              : lastUpdatedName),
           lastUpdatedIdentifier,
           timeStamp: ts,
           payment: slot.waitList[wlIndex].payment,
@@ -328,18 +342,21 @@ router.patch("/:id/player", auth, async (req, res) => {
         };
       }
     } else {
-      // updating own existing player entry or admin modifying on behalf of someone
       const isAdminRequest =
         slot.players[playerIndex].ownerIdentifier !== "" &&
         slot.players[playerIndex].ownerIdentifier !== lastUpdatedIdentifier;
       slot.players[playerIndex] = {
-        name,
-        ownerIdentifier: isAdminRequest
-          ? slot.players[playerIndex].ownerIdentifier
-          : lastUpdatedIdentifier,
-        ownerName: isAdminRequest
-          ? slot.players[playerIndex].ownerName
-          : lastUpdatedName,
+        name: assignedOwnerName || name,
+        ownerIdentifier:
+          assignedOwnerIdentifier ||
+          (isAdminRequest
+            ? slot.players[playerIndex].ownerIdentifier
+            : lastUpdatedIdentifier),
+        ownerName:
+          assignedOwnerName ||
+          (isAdminRequest
+            ? slot.players[playerIndex].ownerName
+            : lastUpdatedName),
         lastUpdatedIdentifier,
         timeStamp: ts,
         payment: false,
