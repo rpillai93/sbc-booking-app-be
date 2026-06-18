@@ -311,7 +311,7 @@ router.patch("/:id/player", auth, async (req, res) => {
         });
       } else if (!slot.waitList[wlIndex]?.name) {
         slot.waitList[wlIndex] = {
-          name: assignedOwnerName || name,
+          name: name || assignedOwnerName,
           ownerIdentifier: assignedOwnerIdentifier || lastUpdatedIdentifier,
           ownerName: assignedOwnerName || lastUpdatedName,
           lastUpdatedIdentifier,
@@ -324,7 +324,7 @@ router.patch("/:id/player", auth, async (req, res) => {
           slot.waitList[wlIndex].ownerIdentifier !== "" &&
           slot.waitList[wlIndex].ownerIdentifier !== lastUpdatedIdentifier;
         slot.waitList[wlIndex] = {
-          name: assignedOwnerName || name,
+          name: name || assignedOwnerName,
           ownerIdentifier:
             assignedOwnerIdentifier ||
             (isAdminRequest
@@ -346,7 +346,7 @@ router.patch("/:id/player", auth, async (req, res) => {
         slot.players[playerIndex].ownerIdentifier !== "" &&
         slot.players[playerIndex].ownerIdentifier !== lastUpdatedIdentifier;
       slot.players[playerIndex] = {
-        name: assignedOwnerName || name,
+        name: name || assignedOwnerName,
         ownerIdentifier:
           assignedOwnerIdentifier ||
           (isAdminRequest
