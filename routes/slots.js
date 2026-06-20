@@ -8,6 +8,8 @@ const {
   isAdmin,
   formatDateForServer,
   rebalanceSlot,
+  incrementBalance,
+  roundCents,
 } = require("../middleware/helpers");
 const logger = require("../utils/logger");
 
@@ -408,7 +410,7 @@ router.patch("/:id/amount", auth, async (req, res) => {
       // successive edits compute the correct incremental delta each time.
       // On first publish slotAmountPublished is false so oldAmt is 0.
       const oldAmt = slot.slotAmountPublished ? (sp.playerAmt ?? 0) : 0;
-      const delta = newAmt - oldAmt;
+      const delta = roundCents(newAmt - oldAmt);
 
       // Only update playerAmt if the player hasn't paid yet.
       // For paid players we still track the delta so balancePayments
@@ -430,7 +432,7 @@ router.patch("/:id/amount", auth, async (req, res) => {
       if (newAmt === undefined) return;
 
       const oldAmt = slot.slotAmountPublished ? (swp.playerAmt ?? 0) : 0;
-      const delta = newAmt - oldAmt;
+      const delta = roundCents(newAmt - oldAmt);
 
       if (!swp.payment) {
         swp.playerAmt = newAmt;
@@ -461,13 +463,7 @@ router.patch("/:id/amount", auth, async (req, res) => {
         const isEmail = identifier.includes("@");
         const query = isEmail ? { email: identifier } : { phone: identifier };
 
-        updatePromises.push(
-          User.findOneAndUpdate(
-            query,
-            { $inc: { balancePayments: delta } },
-            { returnDocument: "after" },
-          ),
-        );
+        updatePromises.push(incrementBalance(query, delta));
       }
 
       await Promise.all(updatePromises);
@@ -561,11 +557,7 @@ router.patch("/:id/payment", auth, async (req, res) => {
         ? { email: ownerIdentifier }
         : { phone: ownerIdentifier };
 
-      await User.findOneAndUpdate(
-        query,
-        { $inc: { balancePayments: -playerAmt } },
-        { returnDocument: "after" },
-      );
+      await incrementBalance(query, -playerAmt);
     }
 
     res.json({ success: true });
